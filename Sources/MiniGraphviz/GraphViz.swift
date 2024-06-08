@@ -720,10 +720,10 @@ public class GraphViz {
         func removeConnections(for nodeId: NodeId) -> [Connection] {
             var result: [Connection] = []
             visit { group in
-                for (i, connection) in connections.enumerated().reversed() {
+                for (i, connection) in group.connections.enumerated().reversed() {
                     if connection.idFrom == nodeId || connection.idTo == nodeId {
                         result.append(connection)
-                        connections.remove(at: i)
+                        group.connections.remove(at: i)
                     }
                 }
                 return true
@@ -759,7 +759,7 @@ public class GraphViz {
                 ancestor.addNode(node)
             }
             for connection in connections {
-                ancestor.connections.append(connection)
+                addConnection(connection)
             }
         }
 
