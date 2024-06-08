@@ -15,7 +15,7 @@ extension GraphViz {
             case .raw(let value):
                 return value
             case .string(let value):
-                return #""\#(value.replacingOccurrences(of: "\"", with: #"\""#))""#
+                return value.debugDescription
             }
         }
 
@@ -51,6 +51,26 @@ internal extension GraphViz.Attributes {
     /// - Returns: A string representation of this list of attributes, enclosed
     /// within square brackets.
     func toDotFileString(defaultValues: Self = [:]) -> String {
+        let attrList = _dotFileString(defaultValues: defaultValues, separated: false)
+        if attrList.isEmpty { return "" }
+        return "[" + attrList.joined(separator: ", ") + "]"
+    }
+
+    /// Returns a dot file-compatible list of attributes from this attributes
+    /// dictionary, separated and terminated by semi-colons, fit to be used in
+    /// a graph definition.
+    ///
+    /// - Parameter defaultValues: A dictionary of default values, where if a
+    /// key within `self` matches the value of the same key on this dictionary
+    /// the value is not emitted.
+    /// - Returns: A string representation of this list of attributes, terminated
+    /// with semicolons.
+    func toInlineDotFileString(defaultValues: Self = [:]) -> String {
+        let attrList = _dotFileString(defaultValues: defaultValues, separated: true)
+        return attrList.joined(separator: "; ")
+    }
+
+    func _dotFileString(defaultValues: Self, separated: Bool) -> [String] {
         // Knock down default values
         var reduced: Self = self
 
@@ -61,7 +81,7 @@ internal extension GraphViz.Attributes {
         }
 
         if reduced.isEmpty {
-            return ""
+            return []
         }
 
         var attrList: [String] = []
@@ -69,9 +89,13 @@ internal extension GraphViz.Attributes {
         for key in reduced.keys.sorted() {
             guard let value = reduced[key] else { continue }
 
-            attrList.append("\(key)=\(value)")
+            if separated {
+                attrList.append("\(key) = \(value)")
+            } else {
+                attrList.append("\(key)=\(value)")
+            }
         }
 
-        return "[" + attrList.joined(separator: ", ") + "]"
+        return attrList
     }
 }

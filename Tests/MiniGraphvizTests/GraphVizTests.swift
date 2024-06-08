@@ -342,6 +342,46 @@ class GraphVizTests: XCTestCase {
         """)
         .diff(sut.generateFile())
     }
+
+    func testGroupAsRank() {
+        let sut = makeSut()
+        let node1 = sut.createNode(label: "n1")
+        sut.createNode(label: "n2")
+        let node3 = sut.createNode(label: "n3")
+        let node4 = sut.createNode(label: "n4")
+        sut.addConnection(fromLabel: "n1", toLabel: "n2")
+        sut.addConnection(fromLabel: "n4", toLabel: "n3")
+        sut.addConnection(fromLabel: "n3", toLabel: "n1")
+
+        sut.groupAsRank([node1, node3], rank: .min)
+        sut.groupAsRank([node4], rank: .sink)
+
+        diffTest(expected: """
+        digraph {
+            graph [rankdir=LR]
+
+            n2 [label="n2"]
+
+            {
+                rank = "min"
+
+                n1 [label="n1"]
+                n3 [label="n3"]
+            }
+
+            {
+                rank = "sink"
+
+                n4 [label="n4"]
+            }
+
+            n3 -> n1
+            n1 -> n2
+            n4 -> n3
+        }
+        """)
+        .diff(sut.generateFile())
+    }
 }
 
 // MARK: - Test internals

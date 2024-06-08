@@ -4,6 +4,14 @@ import Foundation
 public class GraphViz {
     public typealias NodeId = Int
 
+    private static let attribute_rankdir = "rankdir"
+
+    private static func _defaultGraphAttributes() -> Attributes {
+        return [
+            attribute_rankdir: .raw(RankDir.topToBottom.rawValue)
+        ]
+    }
+
     private var _nextId: Int = 1
     private var _rootGroup: Group
 
@@ -12,24 +20,38 @@ public class GraphViz {
     public var rootGraphName: String?
 
     /// Rank direction for this graph.
-    public var rankDir: RankDir = .leftToRight
+    ///
+    /// Defaults to `.leftToRight`.
+    public var rankDir: RankDir {
+        get {
+            guard let value = attributes[Self.attribute_rankdir]?.rawValue else {
+                return .leftToRight
+            }
+            guard let rankDir = RankDir(rawValue: value) else {
+                return .leftToRight
+            }
+
+            return rankDir
+        }
+        set {
+            attributes[Self.attribute_rankdir] = .raw(newValue.rawValue)
+        }
+    }
+
+    /// Attributes for this graph.
+    public var attributes: Attributes = [:]
 
     public init(rootGraphName: String? = nil) {
         self.rootGraphName = rootGraphName
 
-        _rootGroup = Group(title: nil, isCluster: false)
-    }
-
-    private static func _defaultGraphAttributes() -> Attributes {
-        return [
-            "rankdir": .raw(RankDir.topToBottom.rawValue)
-        ]
+        _rootGroup = Group(title: nil, kind: .root)
     }
 
     private func _graphAttributes() -> Attributes {
-        return [
-            "rankdir": .raw(rankDir.rawValue)
-        ]
+        var result = attributes
+        result[Self.attribute_rankdir] = .raw(rankDir.rawValue)
+
+        return result
     }
 
     /// Generates a .dot file for visualization.
@@ -182,9 +204,54 @@ public class GraphViz {
         _rootGroup.addConnection(connection)
     }
 
+    /// Ranks all nodes with a given ID as the next available lowest rank.
+    /// This pushes the nodes onto a new group in their common ancestor, containing
+    /// the rank.
+    ///
+    /// If a node in the sequence already belongs to a rank, it is removed from
+    /// that rank first.
+    public func groupAsRank(_ ids: some Sequence<NodeId>, rank: Rank) {
+        let ids = Array(ids)
+
+        // Start by pulling all nodes to the closest ancestor
+        _rootGroup.moveNodesToCommonAncestor(ids)
+        guard let group = _rootGroup.findGroupForNode(id: ids[0]) else {
+            return
+        }
+
+        let rankGroup = Group(title: nil, kind: .anonymous)
+        rankGroup.attributes["rank"] = .string(rank.rawValue)
+
+        let nodes = group.removeNodes(ids, removeConnections: false)
+        rankGroup.addNodes(nodes)
+
+        group.addSubgroup(rankGroup)
+    }
+
     @discardableResult
     private func withNodeId(_ nodeId: NodeId, _ closure: (inout Node) -> Void) -> Bool {
         _rootGroup.withNodeId(nodeId, closure)
+    }
+
+    /// Specifies a type of rank for groups of nodes.
+    public enum Rank: String {
+        /// All nodes are placed on the same rank.
+        case same
+
+        /// All nodes are placed on the minimum rank.
+        case min
+
+        /// All nodes are placed on the minimum rank, and the only nodes on the
+        /// minimum rank belong to some subgraph with `rank="source"` or `rank="min"`.
+        case source
+
+        /// All nodes are placed on the minimum rank, and the only nodes on the
+        /// minimum rank belong to some subgraph with `rank="source"` or `rank="min"`.
+        case sink
+
+        /// All nodes are placed on the minimum rank, and the only nodes on the
+        /// minimum rank belong to some subgraph with `rank="source"` or `rank="min"`.
+        case max
     }
 
     private struct Node: Comparable {
@@ -259,11 +326,8 @@ public class GraphViz {
 
     /// A group of node definitions.
     private class Group {
-        /// The string title for this group.
-        var title: String?
-
-        /// Whether this group is a cluster: A subgraph within a root graph.
-        var isCluster: Bool
+        /// The kind of this group.
+        var kind: Kind
 
         /// List of subgroups within this group.
         var subgroups: [Group] = []
@@ -281,18 +345,47 @@ public class GraphViz {
             subgroups.isEmpty && nodes.count == 1 && connections.isEmpty
         }
 
+        /// Attributes of this group.
+        var attributes: Attributes = [:]
+
+        /// The string title for this group.
+        var title: String? {
+            get {
+                attributes["label"]?.rawValue
+            }
+            set {
+                attributes["label"] = newValue.map(AttributeValue.string)
+            }
+        }
+
+        /// Used during group merging- returns a copy of the attributes dictionary
+        /// with the title label attribute removed.
+        var attributesExceptTitle: Attributes {
+            var copy = attributes
+            copy["label"] = nil
+            return copy
+        }
+
         weak var supergroup: Group?
 
-        init(title: String?, isCluster: Bool) {
+        init(title: String?, kind: Kind) {
+            self.kind = kind
+
             self.title = title
-            self.isCluster = isCluster
         }
 
         /// Recursively simplifies this group's hierarchy, returning the root of
         /// the new simplified hierarchy.
+        ///
+        /// Groups that have different attributes, except for their title, are
+        /// not merged.
         func simplify() -> Group {
             if isSingleGroup {
                 let group = subgroups[0].simplify()
+                guard group.attributesExceptTitle == attributesExceptTitle else {
+                    return self
+                }
+
                 switch (title, group.title) {
                 case (let t1?, let t2?):
                     group.title = "\(t1)/\(t2)"
@@ -305,12 +398,18 @@ public class GraphViz {
                 return group
             }
 
-            let group = Group(title: title, isCluster: isCluster)
+            let group = Group(title: title, kind: kind)
+            group.attributes = attributes
             group.nodes = nodes
             group.connections = connections
 
             for subgroup in subgroups {
                 let newSubgroup = subgroup.simplify()
+
+                guard subgroup.attributesExceptTitle == attributesExceptTitle else {
+                    group.addSubgroup(newSubgroup)
+                    continue
+                }
 
                 if newSubgroup.isSingleNode {
                     group.nodes.append(newSubgroup.nodes[0])
@@ -344,11 +443,10 @@ public class GraphViz {
 
             let spacer = spacer ?? out.spacerToken()
 
-            if let title = title {
+            // Apply attributes
+            if !attributes.isEmpty {
                 spacer.apply()
-
-                out(line: #"label = "\#(title)""#)
-
+                out(line: attributes.toInlineDotFileString())
                 spacer.reset()
             }
 
@@ -374,15 +472,23 @@ public class GraphViz {
                 for group in subgroups {
                     spacer.apply()
 
-                    let name: String
-                    if group.isCluster {
+                    let lead: String
+                    switch group.kind {
+                    case .anonymous, .root:
+                        lead = ""
+                    case .subgraph:
+                        lead = "subgraph"
+                    case .cluster:
                         clusterCounter += 1
-                        name = "cluster_\(clusterCounter)"
-                    } else {
-                        name = ""
+                        lead = "subgraph cluster_\(clusterCounter)"
                     }
 
-                    out(beginBlock: "subgraph \(name)") {
+                    if lead != "" {
+                        out(line: "\(lead) {")
+                    } else {
+                        out(line: "{")
+                    }
+                    out.indented {
                         group.generateGraph(
                             in: out,
                             options: options,
@@ -390,6 +496,7 @@ public class GraphViz {
                             clusterCounter: &clusterCounter
                         )
                     }
+                    out(line: "}")
 
                     spacer.reset()
                 }
@@ -419,6 +526,36 @@ public class GraphViz {
         /// files.
         func dotFileNodeId(for nodeId: NodeId) -> String {
             "n\(nodeId.description)"
+        }
+
+        /// Returns all connections of a given node within this group's hierarchy.
+        func allConnections(of nodeId: NodeId) -> [Connection] {
+            var result: [Connection] = []
+
+            visitConnections { connection, _ in
+                if connection.idFrom == nodeId || connection.idTo == nodeId {
+                    result.append(connection)
+                }
+                return true
+            }
+
+            return result
+        }
+
+        /// Returns all connections that participate in one or more of the given
+        /// node IDs within this group's hierarchy.
+        func allConnections(of nodeIds: some Sequence<NodeId>) -> [Connection] {
+            let nodeIds = Set(nodeIds)
+            var result: [Connection] = []
+
+            visitConnections { connection, _ in
+                if nodeIds.contains(connection.idFrom) || nodeIds.contains(connection.idTo) {
+                    result.append(connection)
+                }
+                return true
+            }
+
+            return result
         }
 
         func findNode(id: NodeId) -> Node? {
@@ -463,6 +600,8 @@ public class GraphViz {
             return nil
         }
 
+        /// Finds the group that contains a given node ID within this group
+        /// hierarchy.
         func findGroupForNode(id: NodeId) -> Group? {
             if nodes.contains(where: { $0.id == id }) {
                 return self
@@ -491,7 +630,7 @@ public class GraphViz {
                 }
             }
 
-            let group = Group(title: next, isCluster: true)
+            let group = Group(title: next, kind: .cluster)
             addSubgroup(group)
             return group.getOrCreateGroup(remaining)
         }
@@ -505,19 +644,123 @@ public class GraphViz {
             nodes.append(node)
         }
 
+        func addNodes(_ nodes: some Sequence<Node>) {
+            self.nodes.append(contentsOf: nodes)
+        }
+
+        /// Adds a given connection to the first common ancestor of the two nodes
+        /// it references within this group's hierarchy.
         func addConnection(_ connection: Connection) {
             let target: Group
 
             let g1 = findGroupForNode(id: connection.idFrom)
             let g2 = findGroupForNode(id: connection.idTo)
 
-            if let g1 = g1, let g2 = g2, let ancestor = Self.firstCommonAncestor(between: g1, g2) {
+            if
+                let g1 = g1,
+                let g2 = g2,
+                let ancestor = Self.firstCommonAncestor(between: g1, g2)
+            {
                 target = ancestor
             } else {
                 target = self
             }
 
             target.connections.append(connection)
+        }
+
+        /// Removes a given node ID from this group, or one of its subgroups, if
+        /// they contain the node ID.
+        ///
+        /// Also removes any connections that reference the given node ID from
+        /// this group's hierarchy.
+        ///
+        /// Returns the node object that belonged to the identifier, if it was
+        /// found and removed.
+        @discardableResult
+        func removeNode(_ nodeId: NodeId, removeConnections: Bool = true) -> Node? {
+            guard let group = findGroupForNode(id: nodeId) else {
+                return nil
+            }
+
+            if let index = group.nodes.firstIndex(where: { $0.id == nodeId }) {
+                defer {
+                    group.nodes.remove(at: index)
+
+                    if removeConnections {
+                        self.removeConnections(for: nodeId)
+                    }
+                }
+
+                return group.nodes[index]
+            }
+
+            return nil
+        }
+
+        /// Removes a given sequence of node IDs from this group, or one of its
+        /// subgroups, if they contain the node IDs.
+        ///
+        /// Also removes any connections that reference the node IDs from this
+        /// group's hierarchy.
+        ///
+        /// Returns an array of node objects that belonged to the identifiers,
+        /// whenever they successfully bound to an existing node.
+        func removeNodes(_ nodeIds: some Sequence<NodeId>, removeConnections: Bool = true) -> [Node] {
+            nodeIds.compactMap { nodeId in
+                self.removeNode(nodeId, removeConnections: removeConnections)
+            }
+        }
+
+        /// Recursively removes connections referencing a given node ID from this
+        /// group hierarchy.
+        ///
+        /// Returns the array of connections that where removed.
+        @discardableResult
+        func removeConnections(for nodeId: NodeId) -> [Connection] {
+            var result: [Connection] = []
+            visit { group in
+                for (i, connection) in connections.enumerated().reversed() {
+                    if connection.idFrom == nodeId || connection.idTo == nodeId {
+                        result.append(connection)
+                        connections.remove(at: i)
+                    }
+                }
+                return true
+            }
+
+            return result
+        }
+
+        /// Moves all given node IDs into the first common ancestor between them
+        /// within this group.
+        ///
+        /// If this group does not contain all the node IDs, no change is made.
+        ///
+        /// Connections between nodes are also moved to the common ancestor.
+        func moveNodesToCommonAncestor(_ nodeIds: some Sequence<NodeId>) {
+            var groups: [Group] = []
+            for nodeId in nodeIds {
+                guard let owner = findGroupForNode(id: nodeId) else {
+                    return
+                }
+
+                groups.append(owner)
+            }
+
+            let ancestor = Self.firstCommonAncestor(of: groups) ?? self
+            let connections = allConnections(of: nodeIds)
+
+            for nodeId in nodeIds {
+                guard let node = removeNode(nodeId) else {
+                    continue
+                }
+
+                ancestor.addNode(node)
+            }
+            for connection in connections {
+                ancestor.connections.append(connection)
+            }
         }
 
         /// Opens a mutation closure for modifying the properties of a node with
@@ -540,6 +783,64 @@ public class GraphViz {
             return false
         }
 
+        /// Visits all groups within this group hierarchy with a given closure,
+        /// ending the visit the first time it returns `false` or when all
+        /// groups have been visited.
+        func visit(_ visitor: (Group) -> Bool) {
+            var queue = [self]
+
+            while !queue.isEmpty {
+                let next = queue.removeFirst()
+                if !visitor(next) {
+                    return
+                }
+
+                for group in next.subgroups {
+                    queue.append(group)
+                }
+            }
+        }
+
+        /// Visits all nodes within this group hierarchy with a given closure,
+        /// ending the visit the first time it returns `false` or when all
+        /// nodes have been visited.
+        func visitNodes(_ visitor: (Node) -> Bool) {
+            var queue = [self]
+
+            while !queue.isEmpty {
+                let next = queue.removeFirst()
+                for node in next.nodes {
+                    if !visitor(node) {
+                        return
+                    }
+                }
+
+                for group in next.subgroups {
+                    queue.append(group)
+                }
+            }
+        }
+
+        /// Visits all connections within this group hierarchy with a given closure,
+        /// ending the visit the first time it returns `false` or when all
+        /// connections have been visited.
+        func visitConnections(_ visitor: (Connection, Group) -> Bool) {
+            var queue = [self]
+
+            while !queue.isEmpty {
+                let next = queue.removeFirst()
+                for connection in next.connections {
+                    if !visitor(connection, next) {
+                        return
+                    }
+                }
+
+                for group in next.subgroups {
+                    queue.append(group)
+                }
+            }
+        }
+
         func isDescendant(of view: Group) -> Bool {
             var parent: Group? = self
             while let p = parent {
@@ -552,7 +853,25 @@ public class GraphViz {
             return false
         }
 
-        static func firstCommonAncestor(between group1: Group, _ group2: Group) -> Group? {
+        static func firstCommonAncestor(of groups: [Group]) -> Group? {
+            guard var common = groups.first else { return nil }
+
+            for group in groups.dropFirst() {
+                guard let ancestor = firstCommonAncestor(between: group, common) else {
+                    return nil
+                }
+
+                common = ancestor
+            }
+
+            return common
+        }
+
+        static func firstCommonAncestor(
+            between group1: Group,
+            _ group2: Group
+        ) -> Group? {
+
             if group1 === group2 {
                 return group1
             }
@@ -567,6 +886,24 @@ public class GraphViz {
             }
 
             return nil
+        }
+
+        /// The semantic kind of a group.
+        enum Kind {
+            /// The root of a graphviz file.
+            ///
+            /// There can only ever be one root group in a graphviz file, and it
+            /// must be the common ancestor of all other groups.
+            case root
+
+            /// A standard subgraph.
+            case subgraph
+
+            /// A cluster group, or a subgraph with a root graph.
+            case cluster
+
+            /// A group that is emitted without a leading keyword.
+            case anonymous
         }
     }
 
@@ -596,6 +933,9 @@ public class GraphViz {
             self.didApply = didApply
         }
 
+        /// If this spacer token is reset, applies a blank line to the buffer.
+        ///
+        /// Must be reset with ``reset()`` before it can applied again.
         func apply() {
             guard !didApply else { return }
             didApply = true
@@ -603,6 +943,7 @@ public class GraphViz {
             out()
         }
 
+        /// Resets this spacer token so it can be applied again.
         func reset() {
             didApply = false
         }
@@ -619,6 +960,8 @@ private final class StringOutput {
 
     }
 
+    /// Creates a spacer token that issues empty lines as spacing between elements
+    /// in generated graphviz files.
     func spacerToken(disabled: Bool = false) -> GraphViz.SpacerToken {
         .init(out: self, didApply: disabled)
     }
