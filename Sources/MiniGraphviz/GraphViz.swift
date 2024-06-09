@@ -153,7 +153,8 @@ public class GraphViz {
         fromLabel: String,
         toLabel: String,
         label: String? = nil,
-        color: String? = nil
+        color: String? = nil,
+        attributes: Attributes = [:]
     ) {
 
         let from = getOrCreate(label: fromLabel)
@@ -163,7 +164,8 @@ public class GraphViz {
             from: from,
             to: to,
             label: label,
-            color: color
+            color: color,
+            attributes: attributes
         )
     }
 
