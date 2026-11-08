@@ -3,7 +3,7 @@ extension GraphViz {
     public typealias Attributes = [String: AttributeValue]
 
     /// An attribute for a node or connection in a graphviz node.
-    public enum AttributeValue: Equatable, CustomStringConvertible, ExpressibleByStringLiteral, ExpressibleByFloatLiteral, ExpressibleByStringInterpolation {
+    public enum AttributeValue: Equatable, Sendable, CustomStringConvertible, ExpressibleByStringLiteral, ExpressibleByFloatLiteral, ExpressibleByStringInterpolation {
         case double(Double)
         case string(String)
         case raw(String)

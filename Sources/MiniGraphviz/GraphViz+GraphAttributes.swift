@@ -1,6 +1,6 @@
 extension GraphViz {
     /// Values for a `rankdir` graphviz attribute.
-    public enum RankDir: String {
+    public enum RankDir: String, Sendable {
         /// Top-to-bottom
         case topToBottom = "TB"
 
